@@ -1,0 +1,31 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  # Full kernel build requires salt-opt (C++/MLIR backend, depends on LLVM 21).
+  # Docker build infrastructure is in place (Dockerfile + docker_build.py) but
+  # path migration from the monorepo is incomplete.
+  #
+  # The kernel smoke test passes in the monorepo CI:
+  #   https://github.com/bneb/lattice/actions/runs/28913406326
+  #
+  # This CI job verifies the Salt source compiles with a locally-built saltc.
+  verify-salt-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Z3
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev
+      - name: Build Salt Toolchain
+        run: |
+          git clone --depth 1 https://github.com/bneb/salt /tmp/salt
+          echo "SALT_REPO_ROOT=/tmp/salt" >> $GITHUB_ENV
+          cd /tmp/salt/salt-front
+          cargo build --release
+          echo "$PWD/target/release" >> $GITHUB_PATH
+          cd ../tools/sp
+          cargo build --release
+          echo "$PWD/target/release" >> $GITHUB_PATH
+      - name: Verify contracts and compile
+        run: |
+          make test
+          echo "Salt source validation complete"

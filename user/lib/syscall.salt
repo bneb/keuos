@@ -1,0 +1,280 @@
+// =============================================================================
+// user/lib/syscall.salt
+// User-Space Syscall Abstraction Layer
+// =============================================================================
+//
+// Provides typed, safe interfaces to KeuOS OS kernel syscalls.
+// All functions use the SYSCALL instruction via assembly stubs
+// (user/syscall_stubs.S) and return results in RAX.
+//
+// This is the ONLY interface between Ring 3 user programs and the
+// kernel. User programs must import this module rather than declaring
+// raw extern functions.
+//
+// Syscall ABI (x86_64 SYSCALL convention):
+//   RAX = syscall number
+//   RDI = arg0, RSI = arg1, RDX = arg2, R10 = arg3
+//   Returns: RAX = result
+// =============================================================================
+
+package user.lib.syscall
+
+// =============================================================================
+// Raw Assembly Stubs (provided by user/syscall_stubs.S)
+// =============================================================================
+extern fn sys_write(fd: u64, buf: u64, len: u64) -> u64;
+extern fn sys_exit(code: u64);
+extern fn sys_brk(new_brk: u64) -> u64;
+extern fn sys_mmap(length: u64, prot: u64) -> u64;
+extern fn sys_yield();
+
+// =============================================================================
+// Syscall Constants
+// =============================================================================
+pub const STDOUT: u64 = 1;
+pub const PROT_READ: u64 = 1;
+pub const PROT_WRITE: u64 = 2;
+pub const PROT_RW: u64 = 3;  // PROT_READ | PROT_WRITE
+
+// =============================================================================
+// I/O
+// =============================================================================
+
+/// Write a message to stdout via sys_write(1, buf, len)
+pub fn write(buf: u64, len: u64) {
+    sys_write(STDOUT, buf, len);
+}
+
+/// Terminate the process with the given exit code. Never returns.
+pub fn exit(code: u64) {
+    sys_exit(code);
+}
+
+/// Voluntarily yield the CPU to the scheduler.
+pub fn sys_yield_thread() {
+    sys_yield();
+}
+
+// =============================================================================
+// Memory Management
+// =============================================================================
+
+/// Query or set the program break (heap boundary).
+/// Pass 0 to query the current break.
+/// Returns the new break value.
+pub fn brk(new_brk: u64) -> u64 {
+    return sys_brk(new_brk);
+}
+
+/// Request an anonymous memory mapping of the given size.
+/// Returns the virtual address of the mapped region (0 on failure).
+pub fn mmap(length: u64, prot: u64) -> u64 {
+    return sys_mmap(length, prot);
+}
+
+// =============================================================================
+// Process Management
+// =============================================================================
+
+extern fn sys_spawn(path_ptr: u64, path_len: u64) -> u64;
+extern fn sys_wait(pid: u64) -> u64;
+
+pub fn spawn(path_ptr: u64, path_len: u64) -> u64 {
+    return sys_spawn(path_ptr, path_len);
+}
+
+pub fn wait(pid: u64) -> u64 {
+    return sys_wait(pid);
+}
+
+// =============================================================================
+// IPC — Fast-Path Register-Level Message Passing
+// =============================================================================
+
+extern fn sys_ipc_send(target_pid: u64, msg0: u64, msg1: u64, msg2: u64) -> u64;
+extern fn sys_ipc_recv() -> u64;
+
+/// Send a 3-word message to target process via register-level IPC.
+/// The kernel overwrites the target's saved context and immediately yields
+/// the CPU to it. Returns 0 on success.
+pub fn ipc_send(target: u64, m0: u64, m1: u64, m2: u64) -> u64 {
+    return sys_ipc_send(target, m0, m1, m2);
+}
+
+/// Block until an IPC message arrives.
+/// When a message is received, the registers contain the payload:
+///   RAX = sender_pid, RDI = msg0, RSI = msg1, RDX = msg2
+/// Returns: sender_pid (0 if error).
+pub fn ipc_recv() -> u64 {
+    return sys_ipc_recv();
+}
+
+extern fn sys_ipc_get_msg0() -> u64;
+extern fn sys_ipc_get_msg1() -> u64;
+extern fn sys_ipc_get_msg2() -> u64;
+
+pub fn ipc_get_msg0() -> u64 { return sys_ipc_get_msg0(); }
+pub fn ipc_get_msg1() -> u64 { return sys_ipc_get_msg1(); }
+pub fn ipc_get_msg2() -> u64 { return sys_ipc_get_msg2(); }
+
+// =============================================================================
+// Shared Memory — Zero-Copy Bulk Data Transfer
+// =============================================================================
+
+extern fn sys_shm_grant(target_pid: u64, src_vaddr: u64, dst_vaddr: u64, flags: u64) -> u64;
+
+/// Grant the target process access to a physical page at src_vaddr.
+/// The same physical frame is mapped into target's address space at dst_vaddr.
+/// Enables zero-copy bulk data transfer between processes.
+/// Returns 0 on success, -1 on error.
+pub fn shm_grant(target: u64, src: u64, dst: u64, flags: u64) -> u64 {
+    return sys_shm_grant(target, src, dst, flags);
+}
+
+// =============================================================================
+// KeuOS ABI — Control Plane Syscalls
+// =============================================================================
+// These syscalls broker capabilities and resources. Once a ring is mapped,
+// all data plane operations (push/pop) happen in Ring 3 via user/lib/ring.salt.
+// =============================================================================
+
+extern fn sys_cap_bind(flags: u64) -> u64;
+extern fn sys_ring_map(capability_id: u64) -> u64;
+extern fn sys_core_acquire(core_id: u64) -> u64;
+
+/// Allocate a capability handle for SPSC ring operations.
+/// flags: CAP_FLAG_PRODUCER (1) or CAP_FLAG_CONSUMER (2)
+/// Returns: capability ID on success, 0 on failure.
+pub fn cap_bind(flags: u64) -> u64 {
+    return sys_cap_bind(flags);
+}
+
+/// Map a physical SPSC ring to a bound capability.
+/// The kernel allocates a zeroed page and initializes the ring header.
+/// Returns: virtual address of the ring on success, 0 on failure.
+pub fn ring_map(cap_id: u64) -> u64 {
+    return sys_ring_map(cap_id);
+}
+
+/// Request spatial ownership of a CPU core.
+/// Disables preemption and timer interrupts on the target core.
+/// The calling process must already be running on the target core.
+/// Returns: 1 on success, 0 on failure.
+pub fn core_acquire(core_id: u64) -> u64 {
+    return sys_core_acquire(core_id);
+}
+
+extern fn sys_ipc_reg_send(target_cap: u64, p1: u64, p2: u64) -> i64;
+extern fn sys_ipc_ring_await(cap_id: u64) -> i64;
+
+/// Fast-path register IPC: send two u64 payload words directly into the
+/// target process's saved CPU context. The target wakes with p1/p2 in registers.
+/// Returns: 0 on success, -1 invalid cap, -2 target not found.
+pub fn ipc_reg_send(target_cap: u64, p1: u64, p2: u64) -> i64 {
+    return sys_ipc_reg_send(target_cap, p1, p2);
+}
+
+/// Block until data is available on the SPSC ring associated with the given
+/// capability. Used by the Codata substrate for ReactiveStream blocking reads.
+pub fn ipc_ring_await(cap_id: u64) -> i64 {
+    return sys_ipc_ring_await(cap_id);
+}
+
+// =============================================================================
+// System Information
+// =============================================================================
+
+extern fn sys_ps(buf_ptr: u64) -> u64;
+extern fn sys_meminfo(buf_ptr: u64) -> u64;
+extern fn sys_uptime() -> u64;
+extern fn sys_ping(ip: u32) -> u64;
+extern fn sys_tcp_connect(ip: u32) -> u64;
+extern fn sys_tcp_send(conn: u64, buf: u64, len: u64) -> u64;
+extern fn sys_tcp_recv(conn: u64, buf: u64, len: u64) -> u64;
+extern fn sys_tcp_close(conn: u64);
+extern fn sys_tcp_listen(port: u16) -> u64;
+extern fn sys_tcp_accept(slot: u64) -> u64;
+extern fn sys_http_get(ip: u32) -> u64;
+extern fn sys_getpid() -> u64;
+extern fn sys_entity_count() -> u64;
+extern fn sys_entity_list(buf_ptr: u64, max_count: u64) -> u64;
+extern fn sys_entity_map(parent_slot: u64, size: u64) -> u64;
+extern fn sys_entity_alloc(entity_val: u64, size: u64) -> u64;
+
+/// Returns total number of ECS entities.
+pub fn entity_count() -> u64 {
+    return sys_entity_count();
+}
+
+/// Fill buffer with entity IDs and statuses. Returns count written.
+pub fn entity_list(buf_ptr: u64, max_count: u64) -> u64 {
+    return sys_entity_list(buf_ptr, max_count);
+}
+
+/// Allocate or extend ECS entity memory.
+/// If entity_val is 0, creates a new entity with the given size.
+/// If entity_val is non-zero, extends the existing entity.
+/// Returns entity_val on success, 0 on failure.
+pub fn entity_alloc(entity_val: u64, size: u64) -> u64 {
+    return sys_entity_alloc(entity_val, size);
+}
+
+/// Send ICMP echo request, return RTT in ms or 0 on timeout.
+pub fn ping(ip: u32) -> u64 {
+    return sys_ping(ip);
+}
+
+/// TCP active open. Returns conn_id (> 0) or 0 on failure.
+pub fn tcp_connect(ip: u32) -> u64 {
+    return sys_tcp_connect(ip);
+}
+
+/// TCP send data. Returns bytes sent or 0 on failure.
+pub fn tcp_send(conn: u64, buf: u64, len: u64) -> u64 {
+    return sys_tcp_send(conn, buf, len);
+}
+
+/// TCP receive data. Returns bytes read or 0xFFFFFFFFFFFFFFFF if FIN received.
+pub fn tcp_recv(conn: u64, buf: u64, len: u64) -> u64 {
+    return sys_tcp_recv(conn, buf, len);
+}
+
+/// TCP close connection.
+pub fn tcp_close(conn: u64) {
+    sys_tcp_close(conn);
+}
+
+/// TCP passive open — create listening socket on port.
+pub fn tcp_listen(port: u16) -> u64 {
+    return sys_tcp_listen(port);
+}
+
+/// TCP accept — wait for incoming connection on listening socket.
+pub fn tcp_accept(listen_slot: u64) -> u64 {
+    return sys_tcp_accept(listen_slot);
+}
+
+/// TCP connect + HTTP GET to 10.0.2.2:80, returns bytes received.
+pub fn http_get(ip: u32) -> u64 {
+    return sys_http_get(ip);
+}
+
+/// Fill buffer with process info. Returns count.
+pub fn ps(buf_ptr: u64) -> u64 {
+    return sys_ps(buf_ptr);
+}
+
+/// Fill buffer with memory info. Returns 0 on success.
+pub fn meminfo(buf_ptr: u64) -> u64 {
+    return sys_meminfo(buf_ptr);
+}
+
+/// Returns system tick count.
+pub fn uptime() -> u64 {
+    return sys_uptime();
+}
+
+/// Returns calling process PID.
+pub fn getpid() -> u64 {
+    return sys_getpid();
+}

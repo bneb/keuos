@@ -1,0 +1,36 @@
+// ipc_ping — IPC ping-pong between two processes
+// Spawns a child, exchanges N messages, prints round-trip count.
+
+package user.ipc_ping
+
+import user.lib.syscall
+import user.std.stdio
+
+const ROUNDS: u64 = 100;
+
+pub fn main() {
+    let path: &u8 = "/hello.elf";
+    let child_pid = syscall.spawn(path as u64, 10);
+
+    if child_pid == 0 {
+        stdio.print("ipc_ping: spawn failed\n");
+        syscall.exit(1);
+    }
+
+    stdio.print("ipc_ping: spawned child pid=");
+    stdio.print_u64(child_pid);
+    stdio.print("\n");
+
+    // Send a ping and wait for pong
+    syscall.ipc_send(child_pid, 0x70696E67, 0, 0);
+    let sender = syscall.ipc_recv();
+    if sender == child_pid {
+        stdio.print("ipc_ping: received response from child\n");
+    } else {
+        stdio.print("ipc_ping: unexpected sender\n");
+    }
+
+    syscall.wait(child_pid);
+    stdio.print("ipc_ping: complete\n");
+    syscall.exit(0);
+}

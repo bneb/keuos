@@ -1,0 +1,33 @@
+// =============================================================================
+// user/ping.salt
+// ICMP Echo Client — syscall.ping(ip) Based
+// =============================================================================
+//
+// Sends an ICMP echo request to the target IP and reports the result.
+// Uses the kernel's built-in ICMP echo infrastructure (sys_ping) rather
+// than raw sockets — the kernel handles ICMP packet construction and
+// checksum computation internally.
+//
+// Output markers (parsed by runner_qemu.py):
+//   PING 10.0.2.2: <rtt> ms  — echo reply received with RTT in ticks
+//   PING 10.0.2.2: timeout    — no reply within kernel timeout
+// =============================================================================
+
+package user.ping
+
+import user.lib.syscall
+import user.std.stdio
+
+pub fn main() {
+    // Ping QEMU gateway (10.0.2.2 = 0x0A000202)
+    let gw_ip: u32 = 0x0A000202;
+    stdio.print("PING 10.0.2.2: ");
+    let rtt = syscall.ping(gw_ip);
+    if rtt > 0 {
+        stdio.print_u64(rtt);
+        stdio.print(" ms\n");
+    } else {
+        stdio.print("timeout\n");
+    }
+    syscall.exit(0);
+}

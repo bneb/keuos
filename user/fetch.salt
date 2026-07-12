@@ -1,0 +1,74 @@
+// =============================================================================
+// user/fetch.salt — TCP client (connect → send → recv → close)
+// =============================================================================
+// Note: uses hex bytes for HTTP request because Salt's StringView type cannot
+// be cast to u64 (raw pointer) for passing to kernel send/recv syscalls.
+
+package user.fetch
+
+import user.lib.syscall
+import user.std.stdio
+
+pub fn main() {
+    let ip: u32 = 0x7F000001;
+    stdio.print("fetch: TCP connect to 127.0.0.1:8080...\n");
+
+    // Yield to let daemon start
+    let mut _s: u64 = 0;
+    while _s < 30 {
+        syscall.sys_yield_thread();
+        _s = _s + 1;
+    }
+
+    let conn = syscall.tcp_connect(ip);
+    if conn == 0xFFFFFFFFFFFFFFFF {
+        stdio.print("fetch: connect failed\n");
+        syscall.exit(1);
+        return;
+    }
+
+    stdio.print("fetch: connected, sending HTTP GET...\n");
+
+    let mut req: [u8; 53] = [0; 53];
+    req[0] = 0x47; req[1] = 0x45; req[2] = 0x54; req[3] = 0x20;
+    req[4] = 0x2F; req[5] = 0x20; req[6] = 0x48; req[7] = 0x54;
+    req[8] = 0x54; req[9] = 0x50; req[10] = 0x2F; req[11] = 0x31;
+    req[12] = 0x2E; req[13] = 0x31; req[14] = 0x0D; req[15] = 0x0A;
+    req[16] = 0x48; req[17] = 0x6F; req[18] = 0x73; req[19] = 0x74;
+    req[20] = 0x3A; req[21] = 0x20; req[22] = 0x31; req[23] = 0x30;
+    req[24] = 0x2E; req[25] = 0x30; req[26] = 0x2E; req[27] = 0x32;
+    req[28] = 0x2E; req[29] = 0x32; req[30] = 0x0D; req[31] = 0x0A;
+    req[32] = 0x43; req[33] = 0x6F; req[34] = 0x6E; req[35] = 0x6E;
+    req[36] = 0x65; req[37] = 0x63; req[38] = 0x74; req[39] = 0x69;
+    req[40] = 0x6F; req[41] = 0x6E; req[42] = 0x3A; req[43] = 0x20;
+    req[44] = 0x63; req[45] = 0x6C; req[46] = 0x6F; req[47] = 0x73;
+    req[48] = 0x65; req[49] = 0x0D; req[50] = 0x0A; req[51] = 0x0D;
+    req[52] = 0x0A;
+
+    let sent = syscall.tcp_send(conn, &req as u64, 53);
+    stdio.print("fetch: sent ");
+    stdio.print_u64(sent);
+    stdio.print(" bytes, waiting for response...\n");
+
+    // Yield a few times to let the kernel poll for the response
+    let mut _y: u64 = 0;
+    while _y < 10 {
+        syscall.sys_yield_thread();
+        _y = _y + 1;
+    }
+
+    let mut rbuf: [u8; 256] = [0; 256];
+    let total = syscall.tcp_recv(conn, &rbuf as u64, 256);
+    stdio.print("fetch: recv returned ");
+    stdio.print_u64(total);
+    stdio.print("\n");
+    if total > 0 && total != 0xFFFFFFFFFFFFFFFF {
+        stdio.print("--- HTTP RESPONSE ---\n");
+        stdio.print_str(&rbuf as u64, total);
+        stdio.print("\n--- END ---\n");
+    }
+
+    syscall.tcp_close(conn);
+    stdio.print("fetch: done\n");
+    syscall.exit(0);
+}

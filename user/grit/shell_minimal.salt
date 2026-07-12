@@ -1,0 +1,8 @@
+// Minimal grit shell — just exits immediately to verify Ring 3 execution.
+package user.grit.shell_minimal
+
+import user.lib.syscall
+
+pub fn main() {
+    syscall.exit(42);
+}
